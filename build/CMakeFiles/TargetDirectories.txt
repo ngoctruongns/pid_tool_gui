@@ -1,0 +1,4 @@
+/home/tvn/code_ws/pid_tool_gui/build/CMakeFiles/pid_tool_gui.dir
+/home/tvn/code_ws/pid_tool_gui/build/CMakeFiles/edit_cache.dir
+/home/tvn/code_ws/pid_tool_gui/build/CMakeFiles/rebuild_cache.dir
+/home/tvn/code_ws/pid_tool_gui/build/CMakeFiles/pid_tool_gui_autogen.dir
