@@ -20,6 +20,7 @@ private slots:
     void onPortOpened(bool ok, const QString &name);
     void onDataReceived(const QByteArray &data);
     void onSendCommand();
+    void onClearLogs();
     void onUpdatePID();
 
 private:

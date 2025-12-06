@@ -17,6 +17,7 @@
 #include <QDebug>
 #include <QShortcut>
 #include <QApplication>
+#include <QTextCursor>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_serial = new SerialWorker(this);
@@ -68,6 +69,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Third row: log view and PID params
     auto *logView = new QTextEdit();
     logView->setReadOnly(true);
+    auto *autoScrollChk = new QCheckBox("Auto Scroll");
+    autoScrollChk->setChecked(true);
+    auto *clearLogsBtn = new QPushButton("Clear Logs");
 
     auto *pidGroup = new QGroupBox();
     auto *form = new QFormLayout();
@@ -111,8 +115,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     secondRow3->addWidget(eolCombo3);
     secondRow3->addWidget(sendBtn3);
 
+    // left column: log view + controls
+    auto *leftCol = new QVBoxLayout();
+    leftCol->addWidget(logView, 1);
+    auto *logBtns = new QHBoxLayout();
+    logBtns->addWidget(autoScrollChk);
+    logBtns->addStretch();
+    logBtns->addWidget(clearLogsBtn);
+    leftCol->addLayout(logBtns);
+
     auto *thirdRow = new QHBoxLayout();
-    thirdRow->addWidget(logView, 3);
+    thirdRow->addLayout(leftCol, 3);
     thirdRow->addWidget(pidGroup, 1);
 
     auto *mainLay = new QVBoxLayout();
@@ -149,6 +162,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     sendHexChk3->setObjectName("sendHexChk3");
     eolCombo3->setObjectName("eolCombo3");
     logView->setObjectName("logView");
+    autoScrollChk->setObjectName("autoScrollChk");
+    clearLogsBtn->setObjectName("clearLogsBtn");
     kpEdit->setObjectName("kpEdit");
     kiEdit->setObjectName("kiEdit");
     kdEdit->setObjectName("kdEdit");
@@ -157,6 +172,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     sendBtn1->setObjectName("sendBtn1");
     sendBtn2->setObjectName("sendBtn2");
     sendBtn3->setObjectName("sendBtn3");
+
+    connect(clearLogsBtn, &QPushButton::clicked, this, &MainWindow::onClearLogs);
 
     setWindowTitle("PID Tuning Tool");
     resize(900, 700);
@@ -219,9 +236,19 @@ void MainWindow::onDataReceived(const QByteArray &data) {
 
     if (hexLogChk && hexLogChk->isChecked()) {
         logView->append(QString(data.toHex(' ').toUpper()));
+        auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
+        if (autoScrollChk && autoScrollChk->isChecked()) {
+            logView->moveCursor(QTextCursor::End);
+            logView->ensureCursorVisible();
+        }
     } else {
         QString s = QString::fromUtf8(data);
         logView->append(s.trimmed());
+        auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
+        if (autoScrollChk && autoScrollChk->isChecked()) {
+            logView->moveCursor(QTextCursor::End);
+            logView->ensureCursorVisible();
+        }
 
         // Parse Arduino Serial Plotter format: "Variable_1:value1,Variable_2:value2"
         QString line = s.trimmed();
@@ -293,6 +320,13 @@ void MainWindow::onSendCommand() {
     }
     m_serial->sendData(out);
     if (logView) logView->append(QString("TX: %1").arg(QString::fromUtf8(out)));
+    if (logView) {
+        auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
+        if (autoScrollChk && autoScrollChk->isChecked()) {
+            logView->moveCursor(QTextCursor::End);
+            logView->ensureCursorVisible();
+        }
+    }
 }
 
 void MainWindow::onUpdatePID() {
@@ -309,4 +343,9 @@ void MainWindow::onUpdatePID() {
     m_serial->sendData(cmd.toUtf8());
     auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
     if (logView) logView->append(QString("Sent PID: %1").arg(cmd.trimmed()));
+}
+
+void MainWindow::onClearLogs() {
+    auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
+    if (logView) logView->clear();
 }
