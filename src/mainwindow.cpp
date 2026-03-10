@@ -122,6 +122,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     logBtns->addWidget(autoScrollChk);
     logBtns->addStretch();
     logBtns->addWidget(clearLogsBtn);
+    auto *clearPlotBtn = new QPushButton("Clear Plot");
+    logBtns->addWidget(clearPlotBtn);
     leftCol->addLayout(logBtns);
 
     auto *thirdRow = new QHBoxLayout();
@@ -172,8 +174,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     sendBtn1->setObjectName("sendBtn1");
     sendBtn2->setObjectName("sendBtn2");
     sendBtn3->setObjectName("sendBtn3");
+    clearPlotBtn->setObjectName("clearPlotBtn");
 
     connect(clearLogsBtn, &QPushButton::clicked, this, &MainWindow::onClearLogs);
+    connect(clearPlotBtn, &QPushButton::clicked, this, &MainWindow::onClearPlot);
 
     setWindowTitle("PID Tuning Tool");
     resize(900, 700);
@@ -241,9 +245,30 @@ void MainWindow::onDataReceived(const QByteArray &data) {
             logView->moveCursor(QTextCursor::End);
             logView->ensureCursorVisible();
         }
-    } else {
-        QString s = QString::fromUtf8(data);
-        logView->append(s.trimmed());
+        return;
+    }
+
+    QString s = QString::fromUtf8(data);
+
+    // Ghép với phần dòng chưa hoàn chỉnh từ lần trước
+    QString fullPayload = m_incompleteLine + s;
+    QStringList lines = fullPayload.split('\n');
+    m_incompleteLine.clear();
+
+    bool endsWithLinebreak = fullPayload.endsWith('\n');
+    if (!endsWithLinebreak) {
+        m_incompleteLine = lines.takeLast();
+    }
+
+    for (const QString &rawLine : lines) {
+        QString line = rawLine;
+
+        // Loại bỏ CR nếu có (nguồn serial từ Windows CRLF)
+        line.remove('\r');
+        if (line.trimmed().isEmpty()) continue;
+
+        // Thêm vào logView chỉ khi có line hoàn chỉnh
+        logView->append(line);
         auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
         if (autoScrollChk && autoScrollChk->isChecked()) {
             logView->moveCursor(QTextCursor::End);
@@ -251,9 +276,6 @@ void MainWindow::onDataReceived(const QByteArray &data) {
         }
 
         // Parse Arduino Serial Plotter format: "Variable_1:value1,Variable_2:value2"
-        QString line = s.trimmed();
-
-        // Split by comma to get variable:value pairs
         QStringList pairs = line.split(',', Qt::SkipEmptyParts);
 
         bool hasValidData = false;
@@ -348,4 +370,10 @@ void MainWindow::onUpdatePID() {
 void MainWindow::onClearLogs() {
     auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
     if (logView) logView->clear();
+}
+
+void MainWindow::onClearPlot() {
+    if (m_plot) {
+        m_plot->clear();
+    }
 }

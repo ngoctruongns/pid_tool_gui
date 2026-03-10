@@ -21,10 +21,12 @@ private slots:
     void onDataReceived(const QByteArray &data);
     void onSendCommand();
     void onClearLogs();
+    void onClearPlot();
     void onUpdatePID();
 
 private:
     SerialWorker *m_serial;
     PlotViewer *m_plot;
     QWidget *m_centerWidget;
+    QString m_incompleteLine;
 };
