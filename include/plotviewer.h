@@ -17,6 +17,8 @@ public:
     void clear();
     void setVariableNames(const QStringList &names);
     void incrementSampleCounter();
+    void setMaxPoints(int maxPoints);
+    int maxPoints() const;
 
 private:
     QChart *m_chart;
@@ -24,6 +26,7 @@ private:
     QVector<QLineSeries*> m_series;
     QMap<QString, int> m_varNameToIndex;
     qreal m_timeCounter;
+    int m_maxPoints;
     QValueAxis *m_axisX;
     QValueAxis *m_axisY;
 

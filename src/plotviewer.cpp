@@ -2,7 +2,7 @@
 #include <QVBoxLayout>
 #include <QDebug>
 
-PlotViewer::PlotViewer(QWidget *parent) : QWidget(parent), m_timeCounter(0.0) {
+PlotViewer::PlotViewer(QWidget *parent) : QWidget(parent), m_timeCounter(0.0), m_maxPoints(500) {
     m_chart = new QChart();
     m_view = new QChartView(m_chart);
     m_view->setRenderHint(QPainter::Antialiasing);
@@ -47,12 +47,34 @@ QLineSeries* PlotViewer::ensureSeriesForVariable(const QString &varName) {
 
 void PlotViewer::appendSeriesPoint(int seriesIndex, qreal x, qreal y) {
     if (seriesIndex < 0 || seriesIndex >= m_series.size()) return;
-    m_series[seriesIndex]->append(x, y);
+    QLineSeries *s = m_series[seriesIndex];
+    s->append(x, y);
+
+    if (m_maxPoints > 0 && s->count() > m_maxPoints) {
+        int toRemove = s->count() - m_maxPoints;
+        s->removePoints(0, toRemove);
+
+        // Rebase remaining points to 0..count-1 so plot luôn trải đều trên trục X
+        QList<QPointF> points = s->points();
+        for (int i = 0; i < points.size(); ++i) {
+            points[i].setX(i);
+        }
+        s->replace(points);
+    }
 }
 
 void PlotViewer::appendSeriesPointByName(const QString &varName, qreal y) {
-    QLineSeries *s = ensureSeriesForVariable(varName);
-    s->append(m_timeCounter, y);
+    int idx;
+    if (m_varNameToIndex.contains(varName)) {
+        idx = m_varNameToIndex[varName];
+    } else {
+        QLineSeries *s = ensureSeriesForVariable(varName);
+        idx = m_series.indexOf(s);
+    }
+
+    QLineSeries *s = m_series[idx];
+    qreal x = s->count();
+    appendSeriesPoint(idx, x, y);
 }
 
 void PlotViewer::incrementSampleCounter() {
@@ -99,6 +121,14 @@ void PlotViewer::setVariableNames(const QStringList &names) {
         ensureSeriesForVariable(name);
     }
     m_timeCounter = 0.0;
+}
+
+void PlotViewer::setMaxPoints(int maxPoints) {
+    m_maxPoints = maxPoints;
+}
+
+int PlotViewer::maxPoints() const {
+    return m_maxPoints;
 }
 
 void PlotViewer::clear() {
