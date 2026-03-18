@@ -21,6 +21,8 @@
 #include <QShortcut>
 #include <QApplication>
 #include <QTextCursor>
+#include <QMenuBar>
+#include <QAction>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_serial = new SerialWorker(this);
@@ -28,13 +30,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // Top row: serial controls
     auto *portCombo = new QComboBox();
+    portCombo->setMaximumWidth(160);
     auto *findBtn = new QPushButton("Find Port");
+    findBtn->setMaximumWidth(120);
     auto *baudCombo = new QComboBox();
     baudCombo->addItems({"9600","19200","38400","57600","115200","230400", "460800", "921600"});
     baudCombo->setCurrentText("115200");
+    baudCombo->setMaximumWidth(140);
     auto *hexLogChk = new QCheckBox("HEX");
     auto *openBtn = new QPushButton("Open");
+    openBtn->setMaximumWidth(110);
     auto *closeBtn = new QPushButton("Close");
+    closeBtn->setMaximumWidth(110);
+    auto *toggleLedBuzzerBtn = new QPushButton("PID/LED/Buzzer");
+    toggleLedBuzzerBtn->setCheckable(true);
+    toggleLedBuzzerBtn->setMaximumWidth(150);
     closeBtn->setEnabled(false);
 
     connect(findBtn, &QPushButton::clicked, this, &MainWindow::onFindPorts);
@@ -89,6 +99,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     encForm->addRow(new QLabel("Right:"), m_rightEncLabel);
     m_encGroup->setLayout(encForm);
 
+    // Motor RPM feedback section (enabled in hex mode only)
+    m_rpmGroup = new QGroupBox("Motor RPM Feedback");
+    m_rpmGroup->setEnabled(false);
+    auto *rpmForm = new QFormLayout();
+    m_leftRpmLabel = new QLabel("--");
+    m_rightRpmLabel = new QLabel("--");
+    m_leftRpmLabel->setMinimumWidth(80);
+    m_rightRpmLabel->setMinimumWidth(80);
+    rpmForm->addRow(new QLabel("Left RPM:"), m_leftRpmLabel);
+    rpmForm->addRow(new QLabel("Right RPM:"), m_rightRpmLabel);
+    m_rpmGroup->setLayout(rpmForm);
+
     // Velocity command section (enabled in hex mode only)
     m_velGroup = new QGroupBox("Velocity Command");
     m_velGroup->setEnabled(false);
@@ -97,12 +119,63 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *rightRpmEdit = new QLineEdit();
     leftRpmEdit->setPlaceholderText("0");
     rightRpmEdit->setPlaceholderText("0");
+    auto *velContinuousChk = new QCheckBox("Continuous");
+    auto *velIntervalEdit = new QLineEdit();
+    velIntervalEdit->setText("100");
+    velIntervalEdit->setMaximumWidth(80);
     auto *sendVelBtn = new QPushButton("Send Velocity");
+    auto *velPeriodicRow = new QWidget();
+    auto *velPeriodicLay = new QHBoxLayout(velPeriodicRow);
+    velPeriodicLay->setContentsMargins(0, 0, 0, 0);
+    velPeriodicLay->addWidget(velContinuousChk);
+    velPeriodicLay->addWidget(new QLabel("Interval(ms):"));
+    velPeriodicLay->addWidget(velIntervalEdit);
+    velPeriodicLay->addStretch();
     velForm->addRow(new QLabel("Left RPM:"),  leftRpmEdit);
     velForm->addRow(new QLabel("Right RPM:"), rightRpmEdit);
+    velForm->addRow(velPeriodicRow);
     velForm->addRow(sendVelBtn);
     m_velGroup->setLayout(velForm);
     connect(sendVelBtn, &QPushButton::clicked, this, &MainWindow::onSendVelCommand);
+
+    m_velSendTimer = new QTimer(this);
+    m_velSendTimer->setSingleShot(false);
+    connect(m_velSendTimer, &QTimer::timeout, this, &MainWindow::onSendVelCommand);
+    connect(velContinuousChk, &QCheckBox::stateChanged, this, [this, velIntervalEdit](int state) {
+        bool enableContinuous = (state == Qt::Checked);
+        if (!enableContinuous) {
+            if (m_velSendTimer) m_velSendTimer->stop();
+            appendLog("Velocity continuous send stopped");
+            return;
+        }
+
+        bool ok = false;
+        int intervalMs = velIntervalEdit->text().toInt(&ok);
+        if (!ok || intervalMs <= 0) {
+            appendLog("[ERR] Invalid velocity interval (ms)");
+            auto *chk = m_centerWidget ? m_centerWidget->findChild<QCheckBox*>("velContinuousChk") : nullptr;
+            if (chk) chk->setChecked(false);
+            return;
+        }
+
+        if (m_velSendTimer) {
+            m_velSendTimer->start(intervalMs);
+        }
+        onSendVelCommand();
+        appendLog(QString("Velocity continuous send started (%1 ms)").arg(intervalMs));
+    });
+
+    connect(velIntervalEdit, &QLineEdit::editingFinished, this, [this, velIntervalEdit]() {
+        if (!m_velSendTimer || !m_velSendTimer->isActive()) return;
+        bool ok = false;
+        int intervalMs = velIntervalEdit->text().toInt(&ok);
+        if (!ok || intervalMs <= 0) {
+            appendLog("[ERR] Invalid velocity interval (ms)");
+            return;
+        }
+        m_velSendTimer->setInterval(intervalMs);
+        appendLog(QString("Velocity interval updated: %1 ms").arg(intervalMs));
+    });
 
     // PID config section
     auto *pidGroup = new QGroupBox("PID Config");
@@ -118,6 +191,65 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     pidGroup->setLayout(form);
     connect(updateBtn, &QPushButton::clicked, this, &MainWindow::onSendPIDConfig);
 
+    // Communication control section (enabled in hex mode only)
+    m_commGroup = new QGroupBox("Feedback Control");
+    m_commGroup->setEnabled(false);
+    auto *commForm = new QFormLayout();
+    auto *feedbackEncChk = new QCheckBox("Encoder");
+    auto *feedbackRpmChk = new QCheckBox("Motor RPM");
+    feedbackEncChk->setChecked(true);
+    auto *sendCommBtn = new QPushButton("Apply Feedback");
+    commForm->addRow(feedbackEncChk);
+    commForm->addRow(feedbackRpmChk);
+    commForm->addRow(sendCommBtn);
+    m_commGroup->setLayout(commForm);
+    connect(sendCommBtn, &QPushButton::clicked, this, &MainWindow::onSendCommControl);
+
+    // LED control section (enabled in hex mode only)
+    m_ledGroup = new QGroupBox("LED Control");
+    m_ledGroup->setEnabled(false);
+    auto *ledForm = new QFormLayout();
+    auto *ledTypeEdit = new QLineEdit();
+    auto *ledREdit = new QLineEdit();
+    auto *ledGEdit = new QLineEdit();
+    auto *ledBEdit = new QLineEdit();
+    auto *ledP1Edit = new QLineEdit();
+    auto *ledP2Edit = new QLineEdit();
+    ledTypeEdit->setPlaceholderText("type");
+    ledREdit->setPlaceholderText("0..255");
+    ledGEdit->setPlaceholderText("0..255");
+    ledBEdit->setPlaceholderText("0..255");
+    ledP1Edit->setPlaceholderText("param1");
+    ledP2Edit->setPlaceholderText("param2");
+    auto *sendLedBtn = new QPushButton("Send LED");
+    ledForm->addRow(new QLabel("Type:"), ledTypeEdit);
+    ledForm->addRow(new QLabel("R:"), ledREdit);
+    ledForm->addRow(new QLabel("G:"), ledGEdit);
+    ledForm->addRow(new QLabel("B:"), ledBEdit);
+    ledForm->addRow(new QLabel("Param1:"), ledP1Edit);
+    ledForm->addRow(new QLabel("Param2:"), ledP2Edit);
+    ledForm->addRow(sendLedBtn);
+    m_ledGroup->setLayout(ledForm);
+    connect(sendLedBtn, &QPushButton::clicked, this, &MainWindow::onSendLEDControl);
+
+    // Buzzer control section (enabled in hex mode only)
+    m_buzzerGroup = new QGroupBox("Buzzer Control");
+    m_buzzerGroup->setEnabled(false);
+    auto *buzzerForm = new QFormLayout();
+    auto *buzzerTypeEdit = new QLineEdit();
+    auto *buzzerP1Edit = new QLineEdit();
+    auto *buzzerP2Edit = new QLineEdit();
+    buzzerTypeEdit->setPlaceholderText("type");
+    buzzerP1Edit->setPlaceholderText("param1");
+    buzzerP2Edit->setPlaceholderText("param2");
+    auto *sendBuzzerBtn = new QPushButton("Send Buzzer");
+    buzzerForm->addRow(new QLabel("Type:"), buzzerTypeEdit);
+    buzzerForm->addRow(new QLabel("Param1:"), buzzerP1Edit);
+    buzzerForm->addRow(new QLabel("Param2:"), buzzerP2Edit);
+    buzzerForm->addRow(sendBuzzerBtn);
+    m_buzzerGroup->setLayout(buzzerForm);
+    connect(sendBuzzerBtn, &QPushButton::clicked, this, &MainWindow::onSendBuzzerControl);
+
     // Layout assembly
     auto *topRow = new QHBoxLayout();
     topRow->addWidget(new QLabel("Port:"));
@@ -128,6 +260,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     topRow->addWidget(hexLogChk);
     topRow->addWidget(openBtn);
     topRow->addWidget(closeBtn);
+    topRow->addWidget(toggleLedBuzzerBtn);
 
     auto *secondRow = new QHBoxLayout();
     secondRow->addWidget(cmdLine1);
@@ -147,8 +280,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     secondRow3->addWidget(eolCombo3);
     secondRow3->addWidget(sendBtn3);
 
-    // left column: log view + controls
+    // left column: top controls + command rows + log view + controls
     auto *leftCol = new QVBoxLayout();
+    leftCol->addLayout(topRow);
+    leftCol->addLayout(secondRow);
+    leftCol->addLayout(secondRow2);
+    leftCol->addLayout(secondRow3);
     leftCol->addWidget(logView, 1);
     auto *logBtns = new QHBoxLayout();
     logBtns->addWidget(autoScrollChk);
@@ -158,23 +295,36 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     logBtns->addWidget(clearPlotBtn);
     leftCol->addLayout(logBtns);
 
-    auto *rightCol = new QVBoxLayout();
-    rightCol->addWidget(m_encGroup);
-    rightCol->addWidget(m_velGroup);
-    rightCol->addWidget(pidGroup);
-    rightCol->addStretch();
+    auto *rightColLeft = new QVBoxLayout();
+    rightColLeft->addWidget(m_encGroup);
+    rightColLeft->addWidget(m_rpmGroup);
+    rightColLeft->addWidget(m_velGroup);
+    rightColLeft->addWidget(m_commGroup);
+    rightColLeft->addStretch();
+
+    auto *rightColLedBuzzer = new QVBoxLayout();
+    rightColLedBuzzer->addWidget(pidGroup);
+    rightColLedBuzzer->addWidget(m_ledGroup);
+    rightColLedBuzzer->addWidget(m_buzzerGroup);
+    rightColLedBuzzer->addStretch();
+
+    auto *ledBuzzerWidget = new QWidget();
+    ledBuzzerWidget->setLayout(rightColLedBuzzer);
+    ledBuzzerWidget->setVisible(false);
+
+    auto *rightCols = new QHBoxLayout();
+    rightCols->addLayout(rightColLeft, 1);
+    rightCols->addWidget(ledBuzzerWidget, 1);
+
     auto *rightWidget = new QWidget();
-    rightWidget->setLayout(rightCol);
+    rightWidget->setLayout(rightCols);
 
     auto *thirdRow = new QHBoxLayout();
     thirdRow->addLayout(leftCol, 3);
     thirdRow->addWidget(rightWidget, 1);
+    thirdRow->setAlignment(rightWidget, Qt::AlignTop);
 
     auto *mainLay = new QVBoxLayout();
-    mainLay->addLayout(topRow);
-    mainLay->addLayout(secondRow);
-    mainLay->addLayout(secondRow2);
-    mainLay->addLayout(secondRow3);
     mainLay->addLayout(thirdRow);
     mainLay->addWidget(m_plot, 1);
 
@@ -211,15 +361,51 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     kdEdit->setObjectName("kdEdit");
     leftRpmEdit->setObjectName("leftRpmEdit");
     rightRpmEdit->setObjectName("rightRpmEdit");
+    velContinuousChk->setObjectName("velContinuousChk");
+    velIntervalEdit->setObjectName("velIntervalEdit");
+    feedbackEncChk->setObjectName("feedbackEncChk");
+    feedbackRpmChk->setObjectName("feedbackRpmChk");
+    ledTypeEdit->setObjectName("ledTypeEdit");
+    ledREdit->setObjectName("ledREdit");
+    ledGEdit->setObjectName("ledGEdit");
+    ledBEdit->setObjectName("ledBEdit");
+    ledP1Edit->setObjectName("ledP1Edit");
+    ledP2Edit->setObjectName("ledP2Edit");
+    buzzerTypeEdit->setObjectName("buzzerTypeEdit");
+    buzzerP1Edit->setObjectName("buzzerP1Edit");
+    buzzerP2Edit->setObjectName("buzzerP2Edit");
     openBtn->setObjectName("openBtn");
     closeBtn->setObjectName("closeBtn");
     sendBtn1->setObjectName("sendBtn1");
     sendBtn2->setObjectName("sendBtn2");
     sendBtn3->setObjectName("sendBtn3");
+    sendVelBtn->setObjectName("sendVelBtn");
+    sendCommBtn->setObjectName("sendCommBtn");
+    sendLedBtn->setObjectName("sendLedBtn");
+    sendBuzzerBtn->setObjectName("sendBuzzerBtn");
+    toggleLedBuzzerBtn->setObjectName("toggleLedBuzzerBtn");
     clearPlotBtn->setObjectName("clearPlotBtn");
 
     connect(clearLogsBtn, &QPushButton::clicked, this, &MainWindow::onClearLogs);
     connect(clearPlotBtn, &QPushButton::clicked, this, &MainWindow::onClearPlot);
+
+    auto *viewMenu = menuBar()->addMenu("View");
+    auto *showLedBuzzerAct = new QAction("Show PID/LED/Buzzer Panel", this);
+    showLedBuzzerAct->setCheckable(true);
+    showLedBuzzerAct->setChecked(false);
+    viewMenu->addAction(showLedBuzzerAct);
+
+    connect(toggleLedBuzzerBtn, &QPushButton::toggled, this,
+            [ledBuzzerWidget, showLedBuzzerAct](bool checked) {
+                ledBuzzerWidget->setVisible(checked);
+                showLedBuzzerAct->setChecked(checked);
+            });
+
+    connect(showLedBuzzerAct, &QAction::toggled, this,
+            [ledBuzzerWidget, toggleLedBuzzerBtn](bool checked) {
+                ledBuzzerWidget->setVisible(checked);
+                toggleLedBuzzerBtn->setChecked(checked);
+            });
 
     setWindowTitle("PID Tuning Tool");
     resize(900, 700);
@@ -470,14 +656,35 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
                 m_leftEncLabel->setText(QString::number(enc.left_enc));
             if (m_rightEncLabel)
                 m_rightEncLabel->setText(QString::number(enc.right_enc));
-            m_plot->appendSeriesPointByName("Left Enc",  static_cast<qreal>(enc.left_enc));
-            m_plot->appendSeriesPointByName("Right Enc", static_cast<qreal>(enc.right_enc));
+            break;
+        }
+        case MOTOR_RPM_COMMAND:
+        case CMD_VEL_COMMAND: {
+            if (len < static_cast<uint8_t>(sizeof(CmdVelType))) {
+                appendLog("[ERR] RPM frame too short");
+                break;
+            }
+            CmdVelType rpm;
+            std::memcpy(&rpm, decoded, sizeof(CmdVelType));
+            if (m_leftRpmLabel) {
+                m_leftRpmLabel->setText(QString::number(rpm.left_rpm));
+            }
+            if (m_rightRpmLabel) {
+                m_rightRpmLabel->setText(QString::number(rpm.right_rpm));
+            }
+            if (m_hasSetRpm) {
+                m_plot->appendSeriesPointByName("Set Left RPM", static_cast<qreal>(m_lastSetLeftRpm));
+                m_plot->appendSeriesPointByName("Set Right RPM", static_cast<qreal>(m_lastSetRightRpm));
+            }
+            m_plot->appendSeriesPointByName("Left RPM", static_cast<qreal>(rpm.left_rpm));
+            m_plot->appendSeriesPointByName("Right RPM", static_cast<qreal>(rpm.right_rpm));
             m_plot->incrementSampleCounter();
             break;
         }
-        case CMD_VEL_COMMAND:
         case PID_CONFIG_COMMAND:
-            // Sent by host, not expected from board
+        case COMM_CTRL_COMMAND:
+        case LED_CONTROL_COMMAND:
+        case BUZZER_CONTROL_COMMAND:
             appendLog(QString("[WARN] Received outgoing command type: %1").arg(type));
             break;
         default:
@@ -491,11 +698,21 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
 void MainWindow::onHexModeToggled(int state) {
     bool hexMode = (state == Qt::Checked);
     if (m_encGroup) m_encGroup->setEnabled(hexMode);
+    if (m_rpmGroup) m_rpmGroup->setEnabled(hexMode);
     if (m_velGroup) m_velGroup->setEnabled(hexMode);
+    if (m_commGroup) m_commGroup->setEnabled(hexMode);
+    if (m_ledGroup) m_ledGroup->setEnabled(hexMode);
+    if (m_buzzerGroup) m_buzzerGroup->setEnabled(hexMode);
     // Reset parsing state when switching modes
     m_inFrame = false;
     m_rxFrameBuffer.clear();
     m_incompleteLine.clear();
+
+    if (!hexMode && m_velSendTimer && m_velSendTimer->isActive()) {
+        m_velSendTimer->stop();
+        auto *velContinuousChk = m_centerWidget->findChild<QCheckBox*>("velContinuousChk");
+        if (velContinuousChk) velContinuousChk->setChecked(false);
+    }
 }
 
 // ---------- Slot: Send velocity command (framed) ----------
@@ -517,6 +734,10 @@ void MainWindow::onSendVelCommand() {
     cmd.type      = CMD_VEL_COMMAND;
     cmd.left_rpm  = leftRpm;
     cmd.right_rpm = rightRpm;
+
+    m_lastSetLeftRpm = leftRpm;
+    m_lastSetRightRpm = rightRpm;
+    m_hasSetRpm = true;
 
     QByteArray pkt = buildPacket(reinterpret_cast<const uint8_t*>(&cmd), sizeof(cmd));
     m_serial->sendData(pkt);
@@ -563,4 +784,131 @@ void MainWindow::onSendPIDConfig() {
         m_serial->sendData(cmd.toUtf8());
         appendLog(QString("TX PID: %1").arg(cmd.trimmed()));
     }
+}
+
+void MainWindow::onSendCommControl() {
+    auto *feedbackEncChk = m_centerWidget->findChild<QCheckBox*>("feedbackEncChk");
+    auto *feedbackRpmChk = m_centerWidget->findChild<QCheckBox*>("feedbackRpmChk");
+    if (!feedbackEncChk || !feedbackRpmChk) return;
+
+    uint8_t feedback = FEEDBACK_DEFAULT;
+    if (feedbackEncChk->isChecked()) {
+        feedback |= FEEDBACK_ENCODER;
+    }
+    if (feedbackRpmChk->isChecked()) {
+        feedback |= FEEDBACK_MOTOR_RPM;
+    }
+
+    CommCtrlType comm;
+    comm.feedback = feedback;
+
+    uint8_t payload[1 + sizeof(CommCtrlType)] = {0};
+    payload[0] = COMM_CTRL_COMMAND;
+    std::memcpy(payload + 1, &comm, sizeof(comm));
+
+    QByteArray pkt = buildPacket(payload, sizeof(payload));
+    m_serial->sendData(pkt);
+    appendLog(QString("TX COMM_CTRL: feedback=0x%1 | %2")
+        .arg(QString::number(feedback, 16).toUpper())
+        .arg(QString(pkt.toHex(' ').toUpper())));
+}
+
+void MainWindow::onSendLEDControl() {
+    auto *ledTypeEdit = m_centerWidget->findChild<QLineEdit*>("ledTypeEdit");
+    auto *ledREdit = m_centerWidget->findChild<QLineEdit*>("ledREdit");
+    auto *ledGEdit = m_centerWidget->findChild<QLineEdit*>("ledGEdit");
+    auto *ledBEdit = m_centerWidget->findChild<QLineEdit*>("ledBEdit");
+    auto *ledP1Edit = m_centerWidget->findChild<QLineEdit*>("ledP1Edit");
+    auto *ledP2Edit = m_centerWidget->findChild<QLineEdit*>("ledP2Edit");
+    if (!ledTypeEdit || !ledREdit || !ledGEdit || !ledBEdit || !ledP1Edit || !ledP2Edit) return;
+
+    bool okType, okR, okG, okB, okP1, okP2;
+    int type = ledTypeEdit->text().toInt(&okType);
+    int r = ledREdit->text().toInt(&okR);
+    int g = ledGEdit->text().toInt(&okG);
+    int b = ledBEdit->text().toInt(&okB);
+    int p1 = ledP1Edit->text().toInt(&okP1);
+    int p2 = ledP2Edit->text().toInt(&okP2);
+    if (!okType || !okR || !okG || !okB || !okP1 || !okP2) {
+        appendLog("[ERR] Invalid LED values");
+        return;
+    }
+
+    auto clampU8 = [](int v) -> uint8_t {
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        return static_cast<uint8_t>(v);
+    };
+    auto clampU16 = [](int v) -> uint16_t {
+        if (v < 0) v = 0;
+        if (v > 65535) v = 65535;
+        return static_cast<uint16_t>(v);
+    };
+
+    LEDControlType led;
+    led.type = clampU8(type);
+    led.r = clampU8(r);
+    led.g = clampU8(g);
+    led.b = clampU8(b);
+    led.param1 = clampU16(p1);
+    led.param2 = clampU16(p2);
+
+    uint8_t payload[1 + sizeof(LEDControlType)] = {0};
+    payload[0] = LED_CONTROL_COMMAND;
+    std::memcpy(payload + 1, &led, sizeof(led));
+
+    QByteArray pkt = buildPacket(payload, sizeof(payload));
+    m_serial->sendData(pkt);
+    appendLog(QString("TX LED: type=%1 rgb=(%2,%3,%4) p1=%5 p2=%6 | %7")
+        .arg(led.type)
+        .arg(led.r)
+        .arg(led.g)
+        .arg(led.b)
+        .arg(led.param1)
+        .arg(led.param2)
+        .arg(QString(pkt.toHex(' ').toUpper())));
+}
+
+void MainWindow::onSendBuzzerControl() {
+    auto *buzzerTypeEdit = m_centerWidget->findChild<QLineEdit*>("buzzerTypeEdit");
+    auto *buzzerP1Edit = m_centerWidget->findChild<QLineEdit*>("buzzerP1Edit");
+    auto *buzzerP2Edit = m_centerWidget->findChild<QLineEdit*>("buzzerP2Edit");
+    if (!buzzerTypeEdit || !buzzerP1Edit || !buzzerP2Edit) return;
+
+    bool okType, okP1, okP2;
+    int type = buzzerTypeEdit->text().toInt(&okType);
+    int p1 = buzzerP1Edit->text().toInt(&okP1);
+    int p2 = buzzerP2Edit->text().toInt(&okP2);
+    if (!okType || !okP1 || !okP2) {
+        appendLog("[ERR] Invalid buzzer values");
+        return;
+    }
+
+    auto clampU8 = [](int v) -> uint8_t {
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        return static_cast<uint8_t>(v);
+    };
+    auto clampU16 = [](int v) -> uint16_t {
+        if (v < 0) v = 0;
+        if (v > 65535) v = 65535;
+        return static_cast<uint16_t>(v);
+    };
+
+    BuzzerControlType buzzer;
+    buzzer.type = clampU8(type);
+    buzzer.param1 = clampU16(p1);
+    buzzer.param2 = clampU16(p2);
+
+    uint8_t payload[1 + sizeof(BuzzerControlType)] = {0};
+    payload[0] = BUZZER_CONTROL_COMMAND;
+    std::memcpy(payload + 1, &buzzer, sizeof(buzzer));
+
+    QByteArray pkt = buildPacket(payload, sizeof(payload));
+    m_serial->sendData(pkt);
+    appendLog(QString("TX BUZZER: type=%1 p1=%2 p2=%3 | %4")
+        .arg(buzzer.type)
+        .arg(buzzer.param1)
+        .arg(buzzer.param2)
+        .arg(QString(pkt.toHex(' ').toUpper())));
 }

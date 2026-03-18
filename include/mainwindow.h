@@ -7,6 +7,7 @@ class SerialWorker;
 class PlotViewer;
 class QLabel;
 class QGroupBox;
+class QTimer;
 
 namespace Ui { class MainWindow; }
 
@@ -28,6 +29,9 @@ private slots:
     void onHexModeToggled(int state);
     void onSendVelCommand();
     void onSendPIDConfig();
+    void onSendCommControl();
+    void onSendLEDControl();
+    void onSendBuzzerControl();
 
 private:
     SerialWorker *m_serial;
@@ -41,9 +45,19 @@ private:
 
     // STM32 panel widget references
     QGroupBox *m_encGroup      = nullptr;
+    QGroupBox *m_rpmGroup      = nullptr;
     QGroupBox *m_velGroup      = nullptr;
+    QGroupBox *m_commGroup     = nullptr;
+    QGroupBox *m_ledGroup      = nullptr;
+    QGroupBox *m_buzzerGroup   = nullptr;
     QLabel    *m_leftEncLabel  = nullptr;
     QLabel    *m_rightEncLabel = nullptr;
+    QLabel    *m_leftRpmLabel  = nullptr;
+    QLabel    *m_rightRpmLabel = nullptr;
+    QTimer    *m_velSendTimer  = nullptr;
+    bool       m_hasSetRpm      = false;
+    int16_t    m_lastSetLeftRpm = 0;
+    int16_t    m_lastSetRightRpm = 0;
 
     // Helpers
     QByteArray buildPacket(const uint8_t *data, int len);
