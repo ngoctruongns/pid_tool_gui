@@ -85,6 +85,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     logView->setReadOnly(true);
     auto *autoScrollChk = new QCheckBox("Auto Scroll");
     autoScrollChk->setChecked(true);
+    auto *logFilterCombo = new QComboBox();
+    logFilterCombo->addItems({"Show All", "Only RX", "Only TX", "Hide All"});
+    logFilterCombo->setCurrentIndex(0);
     auto *clearLogsBtn = new QPushButton("Clear Logs");
 
     // Encoder data section (enabled in hex mode only)
@@ -161,7 +164,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         if (m_velSendTimer) {
             m_velSendTimer->start(intervalMs);
         }
-        onSendVelCommand();
         appendLog(QString("Velocity continuous send started (%1 ms)").arg(intervalMs));
     });
 
@@ -287,13 +289,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     leftCol->addLayout(secondRow2);
     leftCol->addLayout(secondRow3);
     leftCol->addWidget(logView, 1);
+    auto *spaceLineBtn = new QPushButton("Space Line");
     auto *logBtns = new QHBoxLayout();
     logBtns->addWidget(autoScrollChk);
+    logBtns->addWidget(logFilterCombo);
+    logBtns->addWidget(spaceLineBtn);
     logBtns->addStretch();
     logBtns->addWidget(clearLogsBtn);
     auto *clearPlotBtn = new QPushButton("Clear Plot");
     logBtns->addWidget(clearPlotBtn);
     leftCol->addLayout(logBtns);
+    connect(spaceLineBtn, &QPushButton::clicked, this, [this]() {
+        auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
+        if (!logView) return;
+        logView->append("");
+        logView->append("-----------------------------");
+        logView->append("");
+    });
 
     auto *rightColLeft = new QVBoxLayout();
     rightColLeft->addWidget(m_encGroup);
@@ -355,6 +367,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     eolCombo3->setObjectName("eolCombo3");
     logView->setObjectName("logView");
     autoScrollChk->setObjectName("autoScrollChk");
+    logFilterCombo->setObjectName("logFilterCombo");
     clearLogsBtn->setObjectName("clearLogsBtn");
     kpEdit->setObjectName("kpEdit");
     kiEdit->setObjectName("kiEdit");
@@ -449,15 +462,14 @@ void MainWindow::onPortListUpdated(const QStringList &ports) {
 void MainWindow::onPortOpened(bool ok, const QString &name) {
     auto *openBtn = m_centerWidget->findChild<QPushButton*>("openBtn");
     auto *closeBtn = m_centerWidget->findChild<QPushButton*>("closeBtn");
-    auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
     if (ok) {
         if (openBtn) openBtn->setEnabled(false);
         if (closeBtn) closeBtn->setEnabled(true);
-        if (logView) logView->append(QString("Opened port %1").arg(name));
+        appendLog(QString("Opened port %1").arg(name));
     } else {
         if (openBtn) openBtn->setEnabled(true);
         if (closeBtn) closeBtn->setEnabled(false);
-        if (logView) logView->append("Closed port");
+        appendLog("Closed port");
     }
 }
 
@@ -479,7 +491,7 @@ void MainWindow::onDataReceived(const QByteArray &data) {
                 fullFrame.append(static_cast<char>(STX));
                 fullFrame.append(m_rxFrameBuffer);
                 fullFrame.append(static_cast<char>(ETX));
-                appendLog(QString("RX: ") + QString(fullFrame.toHex(' ').toUpper()));
+                appendLog(QString("RX: ") + QString(fullFrame.toHex(' ').toUpper()), false, true);
                 // Decode and dispatch
                 processFrame(m_rxFrameBuffer);
                 m_rxFrameBuffer.clear();
@@ -511,7 +523,7 @@ void MainWindow::onDataReceived(const QByteArray &data) {
         if (line.trimmed().isEmpty()) continue;
 
         // Thêm vào logView chỉ khi có line hoàn chỉnh
-        appendLog(line);
+        appendLog(line, false, true);
 
         // Parse Arduino Serial Plotter format: "Variable_1:value1,Variable_2:value2"
         QStringList pairs = line.split(',', Qt::SkipEmptyParts);
@@ -554,7 +566,6 @@ void MainWindow::onSendCommand() {
 
     auto *cmdLine = m_centerWidget->findChild<QLineEdit*>(QString("cmdLine%1").arg(idx));
     auto *sendHexChk = m_centerWidget->findChild<QCheckBox*>(QString("sendHexChk%1").arg(idx));
-    auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
     if (!cmdLine) return;
     QString txt = cmdLine->text();
     if (txt.isEmpty()) return;
@@ -579,14 +590,7 @@ void MainWindow::onSendCommand() {
         }
     }
     m_serial->sendData(out);
-    if (logView) logView->append(QString("TX: %1").arg(QString::fromUtf8(out)));
-    if (logView) {
-        auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
-        if (autoScrollChk && autoScrollChk->isChecked()) {
-            logView->moveCursor(QTextCursor::End);
-            logView->ensureCursorVisible();
-        }
-    }
+    appendLog(QString("TX: %1").arg(QString::fromUtf8(out)), true, false);
 }
 
 void MainWindow::onClearLogs() {
@@ -602,9 +606,33 @@ void MainWindow::onClearPlot() {
 
 // ---------- Helper: log text + optional auto-scroll ----------
 
-void MainWindow::appendLog(const QString &text) {
+void MainWindow::appendLog(const QString &text, bool isTx, bool isRx) {
     auto *logView = m_centerWidget->findChild<QTextEdit*>("logView");
     if (!logView) return;
+    auto *logFilterCombo = m_centerWidget->findChild<QComboBox*>("logFilterCombo");
+    int filterIdx = logFilterCombo ? logFilterCombo->currentIndex() : 0;
+
+    bool shouldShow = true;
+    switch (filterIdx) {
+        case 0: // Show All
+            shouldShow = true;
+            break;
+        case 1: // Only RX
+            shouldShow = isRx;
+            break;
+        case 2: // Only TX
+            shouldShow = isTx;
+            break;
+        case 3: // Hide All
+            shouldShow = false;
+            break;
+        default:
+            shouldShow = true;
+            break;
+    }
+
+    if (!shouldShow) return;
+
     logView->append(text);
     auto *autoScrollChk = m_centerWidget->findChild<QCheckBox*>("autoScrollChk");
     if (autoScrollChk && autoScrollChk->isChecked()) {
@@ -632,7 +660,7 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
         decoded);
 
     if (len == 0) {
-        appendLog("[ERR] Frame discarded: CRC mismatch or invalid");
+        appendLog("[ERR] Frame discarded: CRC mismatch or invalid", false, true);
         return;
     }
     if (len < 1) return;
@@ -642,12 +670,12 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
         case DEBUG_STRING: {
             QString dbgStr = QString::fromUtf8(
                 reinterpret_cast<const char*>(decoded + 1), len - 1);
-            appendLog(QString("DBG: ") + dbgStr);
+            appendLog(QString("DBG: ") + dbgStr, false, true);
             break;
         }
         case WHEEL_ENC_COMMAND: {
             if (len < static_cast<uint8_t>(sizeof(WheelEncType))) {
-                appendLog("[ERR] WHEEL_ENC frame too short");
+                appendLog("[ERR] WHEEL_ENC frame too short", false, true);
                 break;
             }
             WheelEncType enc;
@@ -661,7 +689,7 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
         case MOTOR_RPM_COMMAND:
         case CMD_VEL_COMMAND: {
             if (len < static_cast<uint8_t>(sizeof(CmdVelType))) {
-                appendLog("[ERR] RPM frame too short");
+                appendLog("[ERR] RPM frame too short", false, true);
                 break;
             }
             CmdVelType rpm;
@@ -685,10 +713,10 @@ void MainWindow::processFrame(const QByteArray &rawBetweenSTXETX) {
         case COMM_CTRL_COMMAND:
         case LED_CONTROL_COMMAND:
         case BUZZER_CONTROL_COMMAND:
-            appendLog(QString("[WARN] Received outgoing command type: %1").arg(type));
+            appendLog(QString("[WARN] Received outgoing command type: %1").arg(type), false, true);
             break;
         default:
-            appendLog(QString("[WARN] Unknown frame type: %1").arg(type));
+            appendLog(QString("[WARN] Unknown frame type: %1").arg(type), false, true);
             break;
     }
 }
@@ -718,16 +746,31 @@ void MainWindow::onHexModeToggled(int state) {
 // ---------- Slot: Send velocity command (framed) ----------
 
 void MainWindow::onSendVelCommand() {
-    auto *leftRpmEdit  = m_centerWidget->findChild<QLineEdit*>("leftRpmEdit");
-    auto *rightRpmEdit = m_centerWidget->findChild<QLineEdit*>("rightRpmEdit");
-    if (!leftRpmEdit || !rightRpmEdit) return;
+    int16_t leftRpm = 0;
+    int16_t rightRpm = 0;
 
-    bool ok1, ok2;
-    int16_t leftRpm  = static_cast<int16_t>(leftRpmEdit->text().toInt(&ok1));
-    int16_t rightRpm = static_cast<int16_t>(rightRpmEdit->text().toInt(&ok2));
-    if (!ok1 || !ok2) {
-        appendLog("[ERR] Invalid RPM values");
-        return;
+    if (sender() == m_velSendTimer) {
+        if (!m_hasSetRpm) {
+            return;
+        }
+        leftRpm = m_lastSetLeftRpm;
+        rightRpm = m_lastSetRightRpm;
+    } else {
+        auto *leftRpmEdit  = m_centerWidget->findChild<QLineEdit*>("leftRpmEdit");
+        auto *rightRpmEdit = m_centerWidget->findChild<QLineEdit*>("rightRpmEdit");
+        if (!leftRpmEdit || !rightRpmEdit) return;
+
+        bool ok1, ok2;
+        leftRpm  = static_cast<int16_t>(leftRpmEdit->text().toInt(&ok1));
+        rightRpm = static_cast<int16_t>(rightRpmEdit->text().toInt(&ok2));
+        if (!ok1 || !ok2) {
+            appendLog("[ERR] Invalid RPM values");
+            return;
+        }
+
+        m_lastSetLeftRpm = leftRpm;
+        m_lastSetRightRpm = rightRpm;
+        m_hasSetRpm = true;
     }
 
     CmdVelType cmd;
@@ -735,15 +778,11 @@ void MainWindow::onSendVelCommand() {
     cmd.left_rpm  = leftRpm;
     cmd.right_rpm = rightRpm;
 
-    m_lastSetLeftRpm = leftRpm;
-    m_lastSetRightRpm = rightRpm;
-    m_hasSetRpm = true;
-
     QByteArray pkt = buildPacket(reinterpret_cast<const uint8_t*>(&cmd), sizeof(cmd));
     m_serial->sendData(pkt);
     appendLog(QString("TX Vel: L=%1 R=%2 | %3")
         .arg(leftRpm).arg(rightRpm)
-        .arg(QString(pkt.toHex(' ').toUpper())));
+        .arg(QString(pkt.toHex(' ').toUpper())), true, false);
 }
 
 // ---------- Slot: Send PID config (framed in hex mode, text otherwise) ----------
@@ -776,13 +815,13 @@ void MainWindow::onSendPIDConfig() {
         m_serial->sendData(pkt);
         appendLog(QString("TX PID: Kp=%1 Ki=%2 Kd=%3 | %4")
             .arg(kp, 0, 'f', 4).arg(ki, 0, 'f', 4).arg(kd, 0, 'f', 4)
-            .arg(QString(pkt.toHex(' ').toUpper())));
+            .arg(QString(pkt.toHex(' ').toUpper())), true, false);
     } else {
         // Text mode: "PID kp ki kd\n"
         QString cmd = QString("PID %1 %2 %3\n")
             .arg(kpEdit->text(), kiEdit->text(), kdEdit->text());
         m_serial->sendData(cmd.toUtf8());
-        appendLog(QString("TX PID: %1").arg(cmd.trimmed()));
+        appendLog(QString("TX PID: %1").arg(cmd.trimmed()), true, false);
     }
 }
 
@@ -810,7 +849,7 @@ void MainWindow::onSendCommControl() {
     m_serial->sendData(pkt);
     appendLog(QString("TX COMM_CTRL: feedback=0x%1 | %2")
         .arg(QString::number(feedback, 16).toUpper())
-        .arg(QString(pkt.toHex(' ').toUpper())));
+        .arg(QString(pkt.toHex(' ').toUpper())), true, false);
 }
 
 void MainWindow::onSendLEDControl() {
@@ -866,7 +905,7 @@ void MainWindow::onSendLEDControl() {
         .arg(led.b)
         .arg(led.param1)
         .arg(led.param2)
-        .arg(QString(pkt.toHex(' ').toUpper())));
+        .arg(QString(pkt.toHex(' ').toUpper())), true, false);
 }
 
 void MainWindow::onSendBuzzerControl() {
@@ -910,5 +949,5 @@ void MainWindow::onSendBuzzerControl() {
         .arg(buzzer.type)
         .arg(buzzer.param1)
         .arg(buzzer.param2)
-        .arg(QString(pkt.toHex(' ').toUpper())));
+        .arg(QString(pkt.toHex(' ').toUpper())), true, false);
 }

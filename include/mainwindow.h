@@ -62,5 +62,5 @@ private:
     // Helpers
     QByteArray buildPacket(const uint8_t *data, int len);
     void       processFrame(const QByteArray &rawBetweenSTXETX);
-    void       appendLog(const QString &text);
+    void       appendLog(const QString &text, bool isTx = false, bool isRx = false);
 };
